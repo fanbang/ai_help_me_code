@@ -13,166 +13,8 @@ if (!defined('ABSPATH')) {
 
 class AdvancedFileDownload {
     
-    public function init() {
-          add_action('init', array($this, 'init_plugin'));
-		add_action('wp_enqueue_scripts', array($this, 'enqueue_scripts'));
-		add_action('admin_enqueue_scripts', array($this, 'admin_enqueue_scripts'));
-		add_action('admin_menu', array($this, 'add_admin_menu'));
-		add_action('wp_ajax_save_download_item', array($this, 'save_download_item'));
-		add_action('wp_ajax_delete_download_item', array($this, 'delete_download_item'));
-		add_action('wp_ajax_get_download_item', array($this, 'get_download_item'));
-		add_action('wp_ajax_search_download_items', array($this, 'search_download_items')); // 新增
-		add_action('add_meta_boxes', array($this, 'add_download_meta_box'));
-		add_action('save_post', array($this, 'save_post_downloads'));
-		add_shortcode('file_download', array($this, 'render_download_shortcode'));
-		register_activation_hook(__FILE__, array($this, 'create_tables'));
-    }
-    
-    public function init_plugin() {
-        $this->create_tables();
-    }
-    
-    public function create_tables() {
-        global $wpdb;
-        
-        $table_name = $wpdb->prefix . 'advanced_downloads';
-        
-        $charset_collate = $wpdb->get_charset_collate();
-        
-        $sql = "CREATE TABLE $table_name (
-            id mediumint(9) NOT NULL AUTO_INCREMENT,
-            shortcode_id varchar(50) NOT NULL,
-            title varchar(255) NOT NULL,
-            files longtext NOT NULL,
-            created_at datetime DEFAULT CURRENT_TIMESTAMP,
-            updated_at datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            PRIMARY KEY (id),
-            UNIQUE KEY shortcode_id (shortcode_id)
-        ) $charset_collate;";
-        
-        require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
-        dbDelta($sql);
-    }
-    
-    public function enqueue_scripts() {
-        wp_enqueue_style('afd-frontend-style', plugin_dir_url(__FILE__) . 'css/frontend.css');
-    }
-    
-    public function admin_enqueue_scripts($hook) {
-        if ($hook == 'post.php' || $hook == 'post-new.php' || strpos($hook, 'advanced-file-download') !== false) {
-            wp_enqueue_style('afd-admin-style', plugin_dir_url(__FILE__) . 'css/admin.css');
-            wp_enqueue_script('afd-admin-script', plugin_dir_url(__FILE__) . 'js/admin.js', array('jquery'), '1.0', true);
-            wp_localize_script('afd-admin-script', 'afd_ajax', array(
-                'ajax_url' => admin_url('admin-ajax.php'),
-                'nonce' => wp_create_nonce('afd_nonce')
-            ));
-        }
-    }
-    
-    public function add_admin_menu() {
-        add_menu_page(
-            '文件下载管理',
-            '文件下载',
-            'manage_options',
-            'advanced-file-download',
-            array($this, 'admin_page'),
-            'dashicons-download',
-            26
-        );
-    }
-    
-    public function admin_page() {
-        global $wpdb;
-        $table_name = $wpdb->prefix . 'advanced_downloads';
-        $downloads = $wpdb->get_results("SELECT * FROM $table_name ORDER BY created_at DESC");
-        ?>
-        <div class="wrap">
-            <h1>文件下载管理</h1>
-            <button id="add-new-download" class="button button-primary">添加新下载</button>
-            
-            <table class="wp-list-table widefat fixed striped">
-                <thead>
-                    <tr>
-                        <th>短代码ID</th>
-                        <th>标题</th>
-                        <th>创建时间</th>
-                        <th>操作</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php foreach($downloads as $download): ?>
-                    <tr>
-                        <td><code>[file_download id="<?php echo esc_attr($download->shortcode_id); ?>"]</code></td>
-                        <td><?php echo esc_html($download->title); ?></td>
-                        <td><?php echo esc_html($download->created_at); ?></td>
-                        <td>
-                            <button class="button edit-download" data-id="<?php echo esc_attr($download->shortcode_id); ?>">编辑</button>
-                            <button class="button delete-download" data-id="<?php echo esc_attr($download->shortcode_id); ?>">删除</button>
-                        </td>
-                    </tr>
-                    <?php endforeach; ?>
-                </tbody>
-            </table>
-        </div>
-        
-        <!-- 编辑模态框 -->
-        <div id="download-modal" class="afd-modal" style="display:none;">
-            <div class="afd-modal-content">
-                <span class="afd-close">&times;</span>
-                <h2>编辑文件下载</h2>
-                <form id="download-form">
-                    <p>
-                        <label>短代码ID:</label>
-                        <input type="text" id="shortcode-id" name="shortcode_id" required>
-                    </p>
-                    <p>
-                        <label>标题:</label>
-                        <input type="text" id="download-title" name="title" required>
-                    </p>
-                    
-                    <div id="files-container">
-                        <h3>文件列表</h3>
-                        <div id="files-list"></div>
-                        <button type="button" id="add-file" class="button">添加文件</button>
-                    </div>
-                    
-                    <p>
-                        <button type="submit" class="button button-primary">保存</button>
-                        <button type="button" class="button" id="cancel-edit">取消</button>
-                    </p>
-                </form>
-            </div>
-        </div>
-        <?php
-    }
-    
-    public function add_download_meta_box() {
-        add_meta_box(
-            'afd_download_box',
-            '文件下载管理',
-            array($this, 'download_meta_box_callback'),
-            array('post', 'page'),
-            'normal',
-            'high'
-        );
-    }
-    
-   public function download_meta_box_callback($post) {
-    wp_nonce_field('afd_meta_box', 'afd_meta_box_nonce');
-    
-    // 检查文章中是否已有下载短代码
-    $content = $post->post_content;
-    preg_match_all('/\[file_download\s+id=["\']([^"\']+)["\']\]/', $content, $matches);
-    $existing_shortcodes = $matches[1];
-    
-    // 获取所有可用的短代码
-    global $wpdb;
-    $table_name = $wpdb->prefix . 'advanced_downloads';
-    $all_downloads = $wpdb->get_results("SELECT shortcode_id, title FROM $table_name ORDER BY title ASC");
-    
-    if (count($existing_shortcodes) > 1) {
-        echo '<div class="notice notice-warning"><p>警告: 此文章包含多个文件下载短代码: ' . implode(', ', $existing_shortcodes) . '</p></div>';
-    }
+ /*初始化插件+数据库*/
+      /*后台代码省略*/
     ?>
     
     <div id="afd-meta-box">
@@ -348,29 +190,8 @@ class AdvancedFileDownload {
     </div>
     <?php
 }
-   // 新增 AJAX 处理方法：搜索短代码
-	public function search_download_items() {
-		if (!wp_verify_nonce($_POST['nonce'], 'afd_nonce')) {
-			wp_die('Security check failed');
-		}
-		
-		global $wpdb;
-		$table_name = $wpdb->prefix . 'advanced_downloads';
-		
-		$search_term = sanitize_text_field($_POST['search_term']);
-		
-		if (empty($search_term)) {
-			$downloads = $wpdb->get_results("SELECT shortcode_id, title FROM $table_name ORDER BY title ASC");
-		} else {
-			$downloads = $wpdb->get_results($wpdb->prepare(
-				"SELECT shortcode_id, title FROM $table_name WHERE title LIKE %s OR shortcode_id LIKE %s ORDER BY title ASC",
-				'%' . $wpdb->esc_like($search_term) . '%',
-				'%' . $wpdb->esc_like($search_term) . '%'
-			));
-		}
-		
-		wp_send_json_success($downloads);
-	}
+   // 新增 AJAX 处理方法：搜索短代码 
+	//省略 
  
     public function save_post_downloads($post_id) {
         if (!isset($_POST['afd_meta_box_nonce']) || !wp_verify_nonce($_POST['afd_meta_box_nonce'], 'afd_meta_box')) {
@@ -387,7 +208,7 @@ class AdvancedFileDownload {
         
         // 这里可以添加额外的保存逻辑
     }
-    
+    //下面代码有问题
     public function save_download_item() {
         if (!wp_verify_nonce($_POST['nonce'], 'afd_nonce')) {
             wp_die('Security check failed');
@@ -661,327 +482,10 @@ class AdvancedFileDownload {
 $advanced_file_download = new AdvancedFileDownload();
 $advanced_file_download->init();
 
-// CSS 样式
+// CSS 样式  //省略
 function afd_add_inline_styles() {
     ?>
-    <style>
-	.existing-download-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 8px 0;
-    border-bottom: 1px solid #eee;
-}
 
-.download-info {
-    flex: 1;
-}
-
-.download-title {
-    color: #666;
-    font-size: 14px;
-    margin-left: 10px;
-}
-
-.download-actions {
-    display: flex;
-    gap: 5px;
-}
-
-.download-actions .button {
-    font-size: 12px;
-    height: auto;
-    padding: 4px 8px;
-}
-
-#edit-existing-modal .afd-modal-content {
-    max-width: 900px;
-}
-
-#edit-files-container {
-    margin: 20px 0;
-}
-
-#edit-add-platform-buttons {
-    margin-top: 15px;
-}
-
-#edit-add-platform-buttons .add-platform {
-    display: none;
-}
-
-#edit-add-platform-buttons .add-platform.available {
-    display: inline-block;
-}
-	.afd-meta-actions {
-    margin-bottom: 15px;
-    display: flex;
-    gap: 10px;
-}
-
-.shortcode-search {
-    margin-bottom: 15px;
-}
-
-.shortcode-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 12px;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    margin-bottom: 8px;
-    background: #f9f9f9;
-    transition: background-color 0.2s;
-}
-
-.shortcode-item:hover {
-    background: #f0f0f1;
-}
-
-.shortcode-info {
-    flex: 1;
-}
-
-.shortcode-info strong {
-    display: block;
-    margin-bottom: 4px;
-    color: #23282d;
-}
-
-.shortcode-id {
-    font-size: 12px;
-    color: #666;
-    font-family: monospace;
-}
-
-.select-shortcode-btn {
-    margin-left: 10px;
-}
-
-.no-results {
-    text-align: center;
-    padding: 20px;
-    color: #666;
-    font-style: italic;
-}
-    .afd-download-container {
-        background: #f8f9fa;
-        border-radius: 12px;
-        overflow: hidden;
-        margin: 20px 0;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-    }
-    
-    .afd-platform-tabs {
-        display: flex;
-        background: #e9ecef;
-        border-bottom: 1px solid #dee2e6;
-    }
-    
-    .afd-tab {
-        flex: 1;
-        padding: 6px 16px;
-        border: none;
-        background: transparent;
-        cursor: pointer;
-        font-size: 16px;
-        font-weight: 600;
-        transition: all 0.3s ease;
-    }
-    
-    .afd-tab:hover {
-        background: #dee2e6;
-    }
-    
-    .afd-tab.active {
-        background: #0d8ac8;
-        color: white;
-    }
-    
-    .afd-download-content {
-        padding: 0;
-    }
-    
-    .afd-platform-content {
-        display: none;
-        padding: 20px;
-    }
-    
-    .afd-platform-content.active {
-        display: block;
-    }
-    
-    .afd-file-info {
-        margin-bottom: 16px;
-		display: flex;
-		align-items: baseline;
-		gap: 12px;
-		flex-wrap: wrap;
-    }
-    
-    .afd-file-name {
-       font-size: 16px;
-		font-weight: 600;
-		color: #2c3e50;
-		margin-bottom: 0;   
-		flex: 1;
-		min-width: 200px;
-    }
-    .afd-file-size {
-		font-size: 14px;
-		color: #2997f7;
-		background: #e7f3ff;
-		display: inline-block;
-		padding: 4px 8px;
-		border-radius: 12px;
-		white-space: nowrap;
-		flex-shrink: 0;
-	}
-    /* 手机端响应式 */
-	@media (max-width: 768px) {
-		.afd-file-info {
-			flex-direction: column;
-			gap: 8px;
-		}
-		
-		.afd-file-name {
-			min-width: auto;
-			word-break: break-word;
-			overflow-wrap: break-word;
-		}
-	}
-    .afd-download-links {
-        display: flex;
-        gap: 10px;
-        flex-wrap: wrap;
-		float: right;
-		margin-bottom: 20px;
-    }
-    
-    .afd-download-btn {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        padding: 3px 12px;
-        border-radius: 8px;
-        text-decoration: none;
-        font-weight: 500;
-        font-size: 14px;
-        transition: all 0.3s ease;
-        border: 2px solid transparent;
-    }
-    
-    .afd-download-btn:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-        text-decoration: none;
-		color: #fef8f8 !important;
-    }
-    
-    .afd-btn-tera {
-        background: linear-gradient(135deg, #ff6b35, #f7931e);
-        color: white;
-    }
-    
-    .afd-btn-tg,.afd-btn-kzwr,.afd-btn-gofile {
-        background: linear-gradient(135deg, #51a3f1, #0c88c6);
-        color: white;
-    }
-    
-    .afd-btn-mega {
-        background: linear-gradient(135deg, #ff4757, #ff3838);
-        color: white;
-    }
-    
-    .afd-btn-onedrive {
-        background: linear-gradient(135deg, #0078d4, #106ebe);
-        color: white;
-    }
-    
-    .afd-btn-googledrive {
-        background: linear-gradient(135deg, #4285f4, #34a853);
-        color: white;
-    }
-    
-    .afd-btn-dropbox {
-        background: linear-gradient(135deg, #0061ff, #0051d5);
-        color: white;
-    }
-
-    /* 管理界面样式 */
-    .afd-modal {
-        position: fixed;
-        z-index: 100000;
-        left: 0;
-        top: 0;
-        width: 100%;
-        height: 100%;
-        background-color: rgba(0,0,0,0.5);
-    }
-    
-    .afd-modal-content {
-        background-color: #fefefe;
-        margin: 5% auto;
-        padding: 20px;
-        border-radius: 8px;
-        width: 80%;
-        max-width: 800px;
-        max-height: 80vh;
-        overflow-y: auto;
-    }
-    
-    .afd-close {
-        color: #aaa;
-        float: right;
-        font-size: 28px;
-        font-weight: bold;
-        cursor: pointer;
-    }
-    
-    .afd-close:hover {
-        color: black;
-    }
-    
-    .file-item {
-        border: 1px solid #ddd;
-        margin: 10px 0;
-        padding: 15px;
-        border-radius: 5px;
-        background: #f9f9f9;
-    }
-    
-    .link-item {
-        display: flex;
-        gap: 10px;
-        margin: 5px 0;
-        align-items: center;
-    }
-    
-    .link-item select,
-    .link-item input {
-        flex: 1;
-    }
-    
-    .add-platform-buttons {
-        margin: 15px 0;
-        display: flex;
-        gap: 10px;
-        flex-wrap: wrap;
-    }
-    
-    .add-platform {
-        padding: 8px 12px;
-        border-radius: 4px;
-        border: 1px solid #ddd;
-        background: #f0f0f1;
-        cursor: pointer;
-    }
-    
-    .add-platform:hover {
-        background: #e0e0e1;
-    }
-    </style>
     <?php
 }
 add_action('wp_head', 'afd_add_inline_styles');
@@ -1221,38 +725,7 @@ function saveExistingDownload() {
 }
 
 // 从文章中移除短代码
-function removeShortcodeFromPost(shortcodeId) {
-    var shortcode = '[file_download id="' + shortcodeId + '"]';
-    
-    // 检查编辑器类型并移除短代码
-    if (typeof wp !== 'undefined' && wp.data && wp.data.select('core/block-editor')) {
-        // 块编辑器 - 这里需要更复杂的逻辑来查找和删除块
-        alert('块编辑器模式下，请手动删除短代码：' + shortcode);
-    } else if (typeof tinyMCE !== 'undefined' && tinyMCE.activeEditor) {
-        // 经典编辑器
-        var content = tinyMCE.activeEditor.getContent();
-        content = content.replace(shortcode, '');
-        tinyMCE.activeEditor.setContent(content);
-    } else {
-        // 文本编辑器
-        var textarea = document.getElementById('content');
-        if (textarea) {
-            textarea.value = textarea.value.replace(shortcode, '');
-        }
-    }
-    
-    // 从现有下载列表中移除显示
-    $('.existing-download-item').each(function() {
-        if ($(this).find('.edit-existing-download').data('id') === shortcodeId) {
-            $(this).closest('li').remove();
-        }
-    });
-    
-    // 检查是否还有其他下载项
-    if ($('#downloads-in-post ul li').length === 0) {
-        $('#downloads-in-post').empty();
-    }
-}
+ //省略
 
 // 创建链接项HTML的辅助函数
 function createLinkItemHTML(link) {
@@ -1333,44 +806,7 @@ $(document).on('click', '#select-shortcode-modal .afd-close', function() {
 });
 
 // 搜索功能
-$('#shortcode-search').on('input', function() {
-    var searchTerm = $(this).val();
-    loadShortcodes(searchTerm);
-});
-// 选择短代码
-$(document).on('click', '.select-shortcode-btn', function() {
-    var shortcodeId = $(this).closest('.shortcode-item').data('id');
-    var shortcode = '[file_download id="' + shortcodeId + '"]';
-    
-    // 插入短代码到编辑器
-    insertShortcodeToEditor(shortcode);
-    
-    // 关闭模态框
-    $('#select-shortcode-modal').hide();
-    
-    // 刷新现有下载列表
-    updateExistingDownloadsList();
-});
-// 插入短代码到编辑器
-function insertShortcodeToEditor(shortcode) {
-    // 检查是否是经典编辑器还是块编辑器
-    if (typeof wp !== 'undefined' && wp.data && wp.data.select('core/block-editor')) {
-        // 块编辑器 (Gutenberg)
-        var blocks = wp.blocks.createBlock('core/shortcode', {
-            text: shortcode
-        });
-        wp.data.dispatch('core/block-editor').insertBlocks(blocks);
-    } else if (typeof tinyMCE !== 'undefined' && tinyMCE.activeEditor) {
-        // 经典编辑器 (TinyMCE)
-        tinyMCE.activeEditor.insertContent(shortcode);
-    } else {
-        // 文本编辑器
-        var textarea = document.getElementById('content');
-        if (textarea) {
-            textarea.value += '\n' + shortcode + '\n';
-        }
-    }
-}
+// 省略
 
 // 更新现有下载列表
 function updateExistingDownloadsList() {
@@ -1875,20 +1311,7 @@ function checkShortcodeExists(shortcodeId, callback) {
 }
 add_action('admin_footer', 'afd_add_admin_scripts');
 
-// 检查文章中多个短代码的功能
-function afd_check_multiple_shortcodes($content) {
-    preg_match_all('/\[file_download\s+id=["\']([^"\']+)["\']\]/', $content, $matches);
-    
-    if (count($matches[1]) > 1) {
-        add_action('admin_notices', function() use ($matches) {
-            echo '<div class="notice notice-warning is-dismissible">';
-            echo '<p><strong>文件下载插件提醒:</strong> 当前文章包含多个下载短代码: ';
-            echo implode(', ', array_map(function($id) { return '<code>[file_download id="' . esc_html($id) . '"]</code>'; }, $matches[1]));
-            echo '</p></div>';
-        });
-    }
-}
-
+ 
 // 在保存文章时检查
 add_action('save_post', function($post_id) {
     $post = get_post($post_id);
@@ -1897,43 +1320,8 @@ add_action('save_post', function($post_id) {
     }
 });
 
-// 安装时创建示例数据
-function afd_create_sample_data() {
-    global $wpdb;
-    $table_name = $wpdb->prefix . 'advanced_downloads';
-    
-    // 检查是否已有数据
-    $count = $wpdb->get_var("SELECT COUNT(*) FROM $table_name");
-    
-    if ($count == 0) {
-        // 创建示例数据
-        $sample_files = array(
-            'windows' => array(
-                'filename' => 'Adobe.Photoshop.2025v26.6.1.7.Lite.Portable.7z',
-                'filesize' => '2.9GB',
-                'links' => array(
-                    array('icon' => 'tg', 'url' => 'https://example.com/download2', 'name' => 'Tg')
-                )
-            ),
-            'mac' => array(
-                'filename' => 'Adobe.Photoshop.2025v26.6.1.7.Full.Portable.7z',
-                'filesize' => '6.3GB',
-                'links' => array(
-                    array('icon' => 'tg', 'url' => 'https://example.com/download3', 'name' => 'tg'), 
-                )
-            )
-        );
-        
-        $wpdb->insert(
-            $table_name,
-            array(
-                'shortcode_id' => 'photoshop-2025',
-                'title' => 'Adobe Photoshop 2025',
-                'files' => json_encode($sample_files)
-            )
-        );
-    }
-}
+// 安装时创建示例数据 省略
+ 
 
 // 激活插件时创建示例数据
 register_activation_hook(__FILE__, 'afd_create_sample_data');
